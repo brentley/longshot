@@ -11,6 +11,7 @@ function log(...args) {
 
 // DOM elements
 let captureBtn;
+let regionCaptureBtn;
 let toggleConfigBtn;
 let configPanel;
 let statusDiv;
@@ -45,6 +46,7 @@ async function initializePopup() {
 
   // Get DOM elements
   captureBtn = document.getElementById('captureBtn');
+  regionCaptureBtn = document.getElementById('regionCaptureBtn');
   toggleConfigBtn = document.getElementById('toggleConfig');
   configPanel = document.getElementById('configPanel');
   statusDiv = document.getElementById('status');
@@ -64,6 +66,7 @@ async function initializePopup() {
 
   // Event listeners
   captureBtn.addEventListener('click', handleCapture);
+  regionCaptureBtn.addEventListener('click', handleRegionCapture);
   toggleConfigBtn.addEventListener('click', toggleConfigPanel);
   preCapture.addEventListener('change', saveConfig);
 
@@ -192,6 +195,49 @@ async function handleCapture() {
     errorMessage.classList.add('show');
     errorMessage.textContent = error.message;
     captureBtn.disabled = false;
+  }
+}
+
+/**
+ * Handle region capture button click
+ */
+async function handleRegionCapture() {
+  log('Region capture requested');
+
+  errorMessage.classList.remove('show');
+  errorMessage.textContent = '';
+
+  try {
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        { type: 'START_REGION_CAPTURE' },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else if (!response) {
+            reject(new Error('No response from background'));
+          } else {
+            resolve(response);
+          }
+        }
+      );
+    });
+
+    if (!response.success) {
+      throw new Error(response.error || 'Region capture failed');
+    }
+
+    log('Region capture started:', response.sessionId);
+
+    // Close popup so user can select element on page
+    window.close();
+
+  } catch (error) {
+    log('Region capture error:', error);
+    statusDiv.className = 'status show error';
+    statusMessage.textContent = 'Capture failed!';
+    errorMessage.classList.add('show');
+    errorMessage.textContent = error.message;
   }
 }
 

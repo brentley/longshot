@@ -289,6 +289,229 @@ async function scrollAndStitchCapture(tabId, sessionId) {
 }
 
 /**
+ * Start element selection mode
+ * Instructs content script to enter element select mode
+ */
+async function startElementSelect() {
+  log('Starting element select mode');
+
+  try {
+    // Get current tab
+    const tab = await getCurrentTab();
+    if (!tab.id) throw new Error('Tab ID not available');
+
+    // Validate URL is capturable
+    if (!isCapturableUrl(tab.url)) {
+      throw new Error('Cannot capture this page. Please navigate to a regular website.');
+    }
+
+    // Ensure content script is loaded
+    await ensureContentScript(tab.id);
+
+    // Send START_ELEMENT_SELECT message to content script
+    const response = await chrome.tabs.sendMessage(tab.id, {
+      type: 'START_ELEMENT_SELECT'
+    });
+
+    if (!response.success) {
+      throw new Error('Failed to start element selection');
+    }
+
+    log('Element select mode activated');
+
+  } catch (e) {
+    error('Failed to start element select:', e);
+    throw e;
+  }
+}
+
+/**
+ * Capture element by scrolling within element bounds and stitching
+ */
+async function elementCapture(tabId, elementInfo, sessionId) {
+  log('Starting element capture');
+
+  try {
+    // Step 1: Get current element dimensions
+    updateCaptureState(sessionId, 'capturing', 'Getting element dimensions...');
+
+    const dims = await chrome.tabs.sendMessage(tabId, {
+      type: 'ELEMENT_CAPTURE_INIT',
+      elementId: elementInfo.elementId
+    });
+
+    if (!dims.success) {
+      throw new Error('Failed to get element dimensions');
+    }
+
+    log('Element dimensions:', dims);
+
+    const elementScrollHeight = dims.scrollHeight;
+    const elementClientHeight = dims.clientHeight;
+    const viewportHeight = dims.viewportHeight;
+    const viewportWidth = dims.viewportWidth;
+    const originalElementScrollY = dims.currentScrollY;
+    const boundingRect = dims.boundingRect;
+    const devicePixelRatio = dims.devicePixelRatio;
+
+    // Configuration
+    const OVERLAP_HEIGHT = 75;
+    const MAX_CAPTURES = 100;
+    const MAX_TOTAL_HEIGHT = 32000;
+
+    // Calculate number of captures needed
+    let numCaptures = 1;
+    if (elementScrollHeight > elementClientHeight) {
+      const scrollableHeight = elementScrollHeight - elementClientHeight;
+      numCaptures = Math.ceil(scrollableHeight / (elementClientHeight - OVERLAP_HEIGHT)) + 1;
+    }
+
+    numCaptures = Math.min(numCaptures, MAX_CAPTURES);
+    log(`Will capture ${numCaptures} viewports (element height: ${elementScrollHeight}, viewport: ${elementClientHeight})`);
+
+    if (elementScrollHeight > MAX_TOTAL_HEIGHT) {
+      log(`WARNING: Element height ${elementScrollHeight}px exceeds limit ${MAX_TOTAL_HEIGHT}px, may produce large file`);
+    }
+
+    // Step 2: Capture each viewport within element bounds
+    const captures = [];
+
+    for (let i = 0; i < numCaptures; i++) {
+      const scrollY = i * (elementClientHeight - OVERLAP_HEIGHT);
+
+      // Don't scroll past the element's bottom
+      if (scrollY > elementScrollHeight - elementClientHeight) {
+        log(`Capture ${i + 1}: Would exceed element height, stopping`);
+        break;
+      }
+
+      log(`Capture ${i + 1}/${numCaptures}: Scrolling element to Y=${scrollY}`);
+      const progress = Math.round((i / numCaptures) * 100);
+      updateCaptureState(sessionId, 'capturing', `Capturing element viewport ${i + 1}/${numCaptures}...`, progress);
+
+      // Scroll element to position
+      const scrollResult = await chrome.tabs.sendMessage(tabId, {
+        type: 'ELEMENT_SCROLL_TO',
+        elementId: elementInfo.elementId,
+        scrollY
+      });
+
+      if (!scrollResult.success) {
+        throw new Error(`Failed to scroll element to Y=${scrollY}`);
+      }
+
+      log(`Capture ${i + 1}: Element scroll confirmed at Y=${scrollResult.scrolledToY}`);
+
+      // Wait for content to render
+      await new Promise(r => setTimeout(r, 600));
+
+      // Capture visible tab with retry logic
+      log(`Capture ${i + 1}: Taking screenshot...`);
+      let dataUrl;
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          dataUrl = await chrome.tabs.captureVisibleTab(
+            { format: 'png', quality: 100 }
+          );
+          break;
+        } catch (captureError) {
+          retries--;
+          if (captureError.message.includes('quota') && retries > 0) {
+            log(`Rate limited, waiting and retrying... (${retries} retries left)`);
+            await new Promise(r => setTimeout(r, 1000));
+          } else {
+            throw captureError;
+          }
+        }
+      }
+
+      // Convert to blob and store metadata
+      const response = await fetch(dataUrl);
+      const blob = await response.blob();
+
+      captures.push({
+        blob,
+        scrollY,
+        viewportHeight: elementClientHeight,
+        viewportWidth,
+        isLastCapture: scrollY + elementClientHeight >= elementScrollHeight
+      });
+
+      log(`Capture ${i + 1}: Stored (size: ${blob.size} bytes)`);
+    }
+
+    if (captures.length === 0) {
+      throw new Error('No captures were collected');
+    }
+
+    log(`Collected ${captures.length} element captures, sending to offscreen for stitching`);
+
+    // Step 3: Convert blobs to data URLs for transmission
+    updateCaptureState(sessionId, 'stitching', 'Stitching captures together...', 95);
+
+    const captureDataUrls = [];
+    for (let i = 0; i < captures.length; i++) {
+      const reader = new FileReader();
+      const dataUrl = await new Promise((resolve, reject) => {
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(captures[i].blob);
+      });
+      captureDataUrls.push({
+        dataUrl,
+        scrollY: captures[i].scrollY,
+        viewportHeight: captures[i].viewportHeight,
+        viewportWidth: captures[i].viewportWidth,
+        isLastCapture: captures[i].isLastCapture
+      });
+    }
+
+    // Step 4: Create offscreen document and send for stitching
+    await createOffscreenDocument();
+
+    const elementBounds = {
+      width: boundingRect.width,
+      height: boundingRect.height,
+      offsetX: boundingRect.x,
+      offsetY: boundingRect.y
+    };
+
+    const stitchResult = await sendToOffscreen({
+      type: 'STITCH_ELEMENT_CAPTURES',
+      captures: captureDataUrls,
+      overlapHeight: OVERLAP_HEIGHT,
+      elementBounds,
+      tabUrl: 'element'
+    });
+
+    if (!stitchResult || stitchResult.error) {
+      throw new Error(stitchResult?.error || 'Offscreen stitching failed');
+    }
+
+    log('Element stitching complete, received:', stitchResult.pngBlobUrl);
+
+    // Step 5: Restore original element scroll position
+    log('Restoring original element scroll position...');
+    try {
+      await chrome.tabs.sendMessage(tabId, {
+        type: 'ELEMENT_SCROLL_TO',
+        elementId: elementInfo.elementId,
+        scrollY: originalElementScrollY
+      });
+    } catch (e) {
+      log('Warning: Could not restore element scroll position:', e);
+    }
+
+    return stitchResult;
+
+  } catch (e) {
+    error('Element capture failed:', e);
+    throw e;
+  }
+}
+
+/**
  * Pre-capture DOM stabilization
  */
 async function stabilizeDOM(tabId, maxDuration) {
@@ -539,6 +762,90 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'START_REGION_CAPTURE') {
+    startElementSelect()
+      .catch(e => {
+        error('Failed to start region capture:', e);
+        sendResponse({ success: false, error: e.message });
+      });
+    return true;
+  }
+
+  if (message.type === 'ELEMENT_SELECTED') {
+    const sessionId = Math.random().toString(36).substring(7);
+    log(`Starting element capture session ${sessionId}`);
+
+    (async () => {
+      try {
+        const tab = await getCurrentTab();
+        if (!tab.id) throw new Error('Tab ID not available');
+
+        // Store session
+        activeSessions.set(sessionId, {
+          tabId: tab.id,
+          startTime: Date.now(),
+          status: 'element_capture'
+        });
+
+        updateCaptureState(sessionId, 'started', 'Starting element capture...');
+
+        // Capture the element
+        const stitchResult = await elementCapture(tab.id, message.elementInfo, sessionId);
+
+        // Download the stitched PNG with region suffix
+        const hostname = new URL(tab.url || 'https://page').hostname || 'page';
+        const tabTitle = sanitizeForFilename(tab.title || '', 40);
+        const timestamp = new Date().toISOString().replace(/[^\d]/g, '').substring(0, 14);
+        const filename = tabTitle
+          ? `${tabTitle}_${hostname}_${timestamp}_region.png`
+          : `capture_${hostname}_${timestamp}_region.png`;
+
+        updateCaptureState(sessionId, 'downloading', 'Downloading image...');
+
+        await chrome.downloads.download({
+          url: stitchResult.pngBlobUrl,
+          filename,
+          saveAs: false
+        });
+
+        // Clean up blob URL
+        try {
+          if (typeof URL !== 'undefined' && URL.revokeObjectURL) {
+            URL.revokeObjectURL(stitchResult.pngBlobUrl);
+          }
+        } catch (e) {
+          log('Could not revoke blob URL (expected in service worker):', e.message);
+        }
+
+        updateCaptureState(sessionId, 'completed', 'Element capture complete!', 100);
+        log(`Element capture session ${sessionId} completed successfully`);
+
+        // Clear capture state after a short delay
+        setTimeout(() => {
+          if (currentCaptureState && currentCaptureState.sessionId === sessionId) {
+            currentCaptureState = null;
+          }
+        }, 5000);
+
+      } catch (e) {
+        error(`Element capture failed: ${e.message}`);
+        updateCaptureState(sessionId, 'error', `Capture failed: ${e.message}`);
+      } finally {
+        activeSessions.delete(sessionId);
+      }
+    })();
+
+    sendResponse({ success: true, sessionId });
+    return true;
+  }
+
+  if (message.type === 'ELEMENT_SELECT_CANCELLED') {
+    log('Element selection cancelled by user');
+    // Clean up any state if needed
+    sendResponse({ success: true });
+    return true;
+  }
+
   sendResponse({ error: 'Unknown message type' });
 });
 
@@ -559,6 +866,22 @@ chrome.commands.onCommand.addListener(async (command) => {
     chrome.storage.sync.get(DEFAULT_CONFIG, (config) => {
       startCapture(config);
     });
+  }
+
+  if (command === 'capture-region') {
+    // Check if capture is already in progress
+    if (currentCaptureState &&
+        currentCaptureState.status !== 'completed' &&
+        currentCaptureState.status !== 'error') {
+      log('Capture already in progress, ignoring hotkey');
+      return;
+    }
+
+    try {
+      await startElementSelect();
+    } catch (e) {
+      error('Failed to start region capture:', e);
+    }
   }
 });
 

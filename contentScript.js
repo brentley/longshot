@@ -364,4 +364,321 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+/**
+ * Element Selector UI - State variables
+ */
+let elementSelectorActive = false;
+let selectorOverlay = null;
+let highlightBox = null;
+let selectedElement = null;
+
+/**
+ * Show element selector UI
+ * Creates overlay and highlight box for element selection
+ */
+function showElementSelector() {
+  if (elementSelectorActive) {
+    log('Element selector already active');
+    return;
+  }
+
+  elementSelectorActive = true;
+  log('Showing element selector');
+
+  // Create dimming overlay
+  selectorOverlay = document.createElement('div');
+  selectorOverlay.id = 'longshot-selector-overlay';
+  selectorOverlay.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.3);
+    z-index: 2147483647;
+    cursor: crosshair;
+  `;
+
+  // Create highlight box
+  highlightBox = document.createElement('div');
+  highlightBox.id = 'longshot-highlight-box';
+  highlightBox.style.cssText = `
+    position: fixed;
+    display: none;
+    background-color: rgba(102, 126, 234, 0.3);
+    border: 2px solid #667eea;
+    z-index: 2147483648;
+    pointer-events: none;
+    box-sizing: border-box;
+  `;
+
+  // Create instruction banner
+  const banner = document.createElement('div');
+  banner.id = 'longshot-selector-banner';
+  banner.style.cssText = `
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: rgba(0, 0, 0, 0.8);
+    color: white;
+    padding: 12px 20px;
+    border-radius: 4px;
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    z-index: 2147483649;
+    pointer-events: none;
+    white-space: nowrap;
+  `;
+  banner.textContent = 'Click an element to capture. Press Escape to cancel.';
+
+  // Add event listeners
+  selectorOverlay.addEventListener('mousemove', handleElementHover);
+  selectorOverlay.addEventListener('click', handleElementClick);
+  document.addEventListener('keydown', handleSelectorKeydown);
+
+  // Add elements to DOM
+  document.body.appendChild(selectorOverlay);
+  document.body.appendChild(highlightBox);
+  document.body.appendChild(banner);
+
+  log('Element selector UI created');
+}
+
+/**
+ * Handle element hover - update highlight box position
+ */
+function handleElementHover(e) {
+  if (!elementSelectorActive) return;
+
+  // Temporarily hide overlay to get the real element underneath
+  const overlay = document.getElementById('longshot-selector-overlay');
+  overlay.style.pointerEvents = 'none';
+  const element = document.elementFromPoint(e.clientX, e.clientY);
+  overlay.style.pointerEvents = 'auto';
+
+  // Skip if element is part of our UI
+  if (!element || element.id === 'longshot-selector-overlay' ||
+      element.id === 'longshot-highlight-box' ||
+      element.id === 'longshot-selector-banner' ||
+      element.closest('#longshot-selector-banner')) {
+    highlightBox.style.display = 'none';
+    return;
+  }
+
+  // Get bounding rect of element
+  const rect = element.getBoundingClientRect();
+
+  // Position highlight box
+  highlightBox.style.left = rect.left + 'px';
+  highlightBox.style.top = rect.top + 'px';
+  highlightBox.style.width = rect.width + 'px';
+  highlightBox.style.height = rect.height + 'px';
+  highlightBox.style.display = 'block';
+}
+
+/**
+ * Handle element click - select element for capture
+ */
+function handleElementClick(e) {
+  if (!elementSelectorActive) return;
+
+  e.preventDefault();
+  e.stopPropagation();
+
+  // Temporarily hide overlay to get the real element
+  const overlay = document.getElementById('longshot-selector-overlay');
+  overlay.style.pointerEvents = 'none';
+  const element = document.elementFromPoint(e.clientX, e.clientY);
+  overlay.style.pointerEvents = 'auto';
+
+  if (!element || element.id === 'longshot-selector-overlay' ||
+      element.id === 'longshot-highlight-box' ||
+      element.id === 'longshot-selector-banner') {
+    return;
+  }
+
+  selectedElement = element;
+  log('Element selected:', describeElement(selectedElement));
+
+  // Get element's bounding rect and scroll dimensions
+  const rect = selectedElement.getBoundingClientRect();
+  const scrollHeight = selectedElement.scrollHeight;
+  const scrollWidth = selectedElement.scrollWidth;
+  const clientHeight = selectedElement.clientHeight;
+  const clientWidth = selectedElement.clientWidth;
+  const isScrollable = scrollHeight > clientHeight || scrollWidth > clientWidth;
+
+  const elementInfo = {
+    boundingRect: {
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      width: rect.width,
+      height: rect.height
+    },
+    scrollWidth: scrollWidth,
+    scrollHeight: scrollHeight,
+    clientWidth: clientWidth,
+    clientHeight: clientHeight,
+    isScrollable: isScrollable,
+    tagName: selectedElement.tagName,
+    className: selectedElement.className,
+    id: selectedElement.id
+  };
+
+  log('Element info:', elementInfo);
+
+  // Clean up selector UI
+  cleanupElementSelector();
+
+  // Send message to background
+  chrome.runtime.sendMessage({
+    type: 'ELEMENT_SELECTED',
+    elementInfo: elementInfo
+  }, (response) => {
+    if (chrome.runtime.lastError) {
+      error('Failed to send ELEMENT_SELECTED message:', chrome.runtime.lastError);
+    } else {
+      log('ELEMENT_SELECTED message sent, response:', response);
+    }
+  });
+}
+
+/**
+ * Handle keydown events in selector mode
+ */
+function handleSelectorKeydown(e) {
+  if (!elementSelectorActive) return;
+
+  if (e.key === 'Escape') {
+    log('Element selector cancelled');
+    cleanupElementSelector();
+  }
+}
+
+/**
+ * Clean up element selector UI
+ */
+function cleanupElementSelector() {
+  if (!elementSelectorActive) return;
+
+  log('Cleaning up element selector');
+
+  // Remove event listeners
+  if (selectorOverlay) {
+    selectorOverlay.removeEventListener('mousemove', handleElementHover);
+    selectorOverlay.removeEventListener('click', handleElementClick);
+  }
+  document.removeEventListener('keydown', handleSelectorKeydown);
+
+  // Remove overlay banner
+  const banner = document.getElementById('longshot-selector-banner');
+  if (banner) banner.remove();
+
+  // Remove overlay
+  if (selectorOverlay) selectorOverlay.remove();
+
+  // Remove highlight box
+  if (highlightBox) highlightBox.remove();
+
+  // Reset state
+  selectorOverlay = null;
+  highlightBox = null;
+  elementSelectorActive = false;
+
+  log('Element selector cleaned up');
+}
+
+/**
+ * Extend message listener for element selector
+ */
+const originalListener = chrome.runtime.onMessage.addListener;
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // START_ELEMENT_SELECT: Initiate element selection
+  if (message.type === 'START_ELEMENT_SELECT') {
+    log('Received START_ELEMENT_SELECT request');
+    try {
+      showElementSelector();
+      sendResponse({ success: true });
+    } catch (e) {
+      error('Failed to start element selector:', e);
+      sendResponse({ success: false, error: e.message });
+    }
+    return true;
+  }
+
+  // ELEMENT_CAPTURE_INIT: Get current element's scroll dimensions
+  if (message.type === 'ELEMENT_CAPTURE_INIT') {
+    log('Received ELEMENT_CAPTURE_INIT request');
+    try {
+      if (!selectedElement) {
+        sendResponse({ success: false, error: 'No element selected' });
+        return true;
+      }
+
+      const dims = {
+        scrollHeight: selectedElement.scrollHeight,
+        scrollWidth: selectedElement.scrollWidth,
+        clientHeight: selectedElement.clientHeight,
+        clientWidth: selectedElement.clientWidth,
+        scrollTop: selectedElement.scrollTop,
+        scrollLeft: selectedElement.scrollLeft,
+        viewportOffsetX: selectedElement.getBoundingClientRect().left,
+        viewportOffsetY: selectedElement.getBoundingClientRect().top
+      };
+
+      log('Element capture init:', dims);
+      sendResponse({ success: true, ...dims });
+    } catch (e) {
+      error('Failed to get element capture init:', e);
+      sendResponse({ success: false, error: e.message });
+    }
+    return true;
+  }
+
+  // ELEMENT_SCROLL_TO: Scroll element to position
+  if (message.type === 'ELEMENT_SCROLL_TO') {
+    log(`Received ELEMENT_SCROLL_TO request: x=${message.x}, y=${message.y}`);
+    try {
+      if (!selectedElement) {
+        sendResponse({ success: false, error: 'No element selected' });
+        return true;
+      }
+
+      selectedElement.scrollTo(message.x || 0, message.y || 0);
+
+      // Wait for scroll to settle
+      setTimeout(() => {
+        const result = {
+          scrolledToX: selectedElement.scrollLeft,
+          scrolledToY: selectedElement.scrollTop
+        };
+        log('Element scroll completed:', result);
+        sendResponse({ success: true, ...result });
+      }, 150);
+    } catch (e) {
+      error('Failed to scroll element:', e);
+      sendResponse({ success: false, error: e.message });
+    }
+    return true;
+  }
+
+  // CLEANUP_ELEMENT_SELECT: Clean up selector
+  if (message.type === 'CLEANUP_ELEMENT_SELECT') {
+    log('Received CLEANUP_ELEMENT_SELECT request');
+    try {
+      cleanupElementSelector();
+      selectedElement = null;
+      sendResponse({ success: true });
+    } catch (e) {
+      error('Failed to cleanup element selector:', e);
+      sendResponse({ success: false, error: e.message });
+    }
+    return true;
+  }
+});
+
 log('Content script loaded');
