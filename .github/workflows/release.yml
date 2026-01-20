@@ -53,15 +53,27 @@ jobs:
             icons/
           ls -la *.zip
 
+      - name: Check for CRX secret
+        id: check_secret
+        run: |
+          if [ -n "${{ secrets.CRX_PRIVATE_KEY }}" ]; then
+            echo "has_key=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_key=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Install CRX tools
+        if: steps.check_secret.outputs.has_key == 'true'
         run: npm install -g crx
 
       - name: Create CRX file
-        if: ${{ secrets.CRX_PRIVATE_KEY != '' }}
+        if: steps.check_secret.outputs.has_key == 'true'
+        env:
+          CRX_PRIVATE_KEY: ${{ secrets.CRX_PRIVATE_KEY }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           # Write the private key from secret
-          echo "${{ secrets.CRX_PRIVATE_KEY }}" > longshot.pem
+          echo "$CRX_PRIVATE_KEY" > longshot.pem
 
           # Create a temporary directory with extension files
           mkdir -p extension
@@ -85,8 +97,9 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            longshot-${{ steps.version.outputs.version }}.zip
-            longshot-${{ steps.version.outputs.version }}.crx
+            longshot-*.zip
+            longshot-*.crx
+          fail_on_unmatched_files: false
           body: |
             ## Longshot v${{ steps.version.outputs.version }}
 
