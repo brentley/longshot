@@ -370,13 +370,32 @@ async function stitchCapturedViewports(captures, overlapHeight) {
       });
     }
 
+    // Detect sticky header by comparing first two captures
+    let stickyHeaderHeight = 0;
+    if (images.length >= 2) {
+      const firstImg = images[0];
+      const secondImg = images[1];
+      // Compare top 200px to detect sticky headers
+      const maxCompareHeight = Math.min(200, firstImg.img.height / 2);
+      stickyHeaderHeight = detectStickyHeaderHeight(
+        firstImg.img,
+        secondImg.img,
+        0,
+        maxCompareHeight,
+        firstImg.img.width
+      );
+      if (stickyHeaderHeight > 0) {
+        log(`Detected sticky header: ${stickyHeaderHeight}px`);
+      }
+    }
+
     // Calculate canvas dimensions
     const canvasWidth = images[0].img.width;
     let totalHeight = images[0].img.height; // First capture is full height
 
-    // Each subsequent capture overlaps by overlapHeight
+    // Each subsequent capture overlaps by overlapHeight, plus any detected sticky header
     for (let i = 1; i < images.length; i++) {
-      const newHeight = images[i].img.height - overlapHeight;
+      const newHeight = images[i].img.height - overlapHeight - stickyHeaderHeight;
       totalHeight += newHeight;
     }
 
@@ -395,15 +414,17 @@ async function stitchCapturedViewports(captures, overlapHeight) {
       throw new Error('Failed to get canvas context');
     }
 
-    // Draw images with overlap handling
+    // Draw images with overlap and sticky header handling
     let currentY = 0;
 
     for (let i = 0; i < images.length; i++) {
       const image = images[i];
-      const drawHeight = i === 0 ? image.img.height : image.img.height - overlapHeight;
-      const sourceY = i === 0 ? 0 : overlapHeight;
+      const isFirstCapture = i === 0;
 
-      log(`Drawing image ${i + 1} at Y=${currentY}, source Y=${sourceY}, height=${drawHeight}`);
+      let sourceY = isFirstCapture ? 0 : overlapHeight + stickyHeaderHeight;
+      let drawHeight = isFirstCapture ? image.img.height : image.img.height - overlapHeight - stickyHeaderHeight;
+
+      log(`Drawing image ${i + 1} at Y=${currentY}, source Y=${sourceY}, height=${drawHeight}, stickySkip=${isFirstCapture ? 0 : stickyHeaderHeight}px`);
 
       // Use canvas API to composite images with overlap blending
       if (i > 0) {
@@ -411,8 +432,8 @@ async function stitchCapturedViewports(captures, overlapHeight) {
         ctx.globalAlpha = 0.5;
         ctx.drawImage(
           image.img,
-          0, sourceY, canvasWidth, overlapHeight,
-          0, currentY, canvasWidth, overlapHeight
+          0, overlapHeight, canvasWidth, stickyHeaderHeight,
+          0, currentY, canvasWidth, stickyHeaderHeight
         );
         ctx.globalAlpha = 1.0;
       }
@@ -420,11 +441,11 @@ async function stitchCapturedViewports(captures, overlapHeight) {
       // Draw the main part of the image
       ctx.drawImage(
         image.img,
-        0, sourceY, canvasWidth, drawHeight - (i > 0 ? overlapHeight : 0),
-        0, currentY + (i > 0 ? overlapHeight : 0), canvasWidth, drawHeight - (i > 0 ? overlapHeight : 0)
+        0, sourceY, canvasWidth, drawHeight,
+        0, currentY + (i > 0 ? stickyHeaderHeight : 0), canvasWidth, drawHeight
       );
 
-      currentY += drawHeight;
+      currentY += drawHeight + (i > 0 ? stickyHeaderHeight : 0);
     }
 
     log('Stitching complete, converting to PNG...');
