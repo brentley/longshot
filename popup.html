@@ -86,6 +86,22 @@
             cursor: not-allowed;
         }
 
+        .button-secondary {
+            background: white;
+            color: #667eea;
+            border: 2px solid #667eea;
+        }
+
+        .button-secondary:hover:not(:disabled) {
+            background: #667eea;
+            color: white;
+        }
+
+        .button-secondary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
         .status {
             padding: 12px 16px;
             border-radius: 8px;
@@ -236,13 +252,18 @@
                 Capture Full Page
             </button>
 
+            <button class="button button-secondary" id="regionCaptureBtn" style="margin-top: 8px;">
+                Capture Element
+            </button>
+
             <div class="error-message" id="errorMessage"></div>
             <div class="error-message" id="restrictedPageMessage">
                 Cannot capture browser internal pages. Please navigate to a regular website.
             </div>
 
             <div class="hotkey-hint">
-                Hotkey: <kbd>Cmd+Shift+S</kbd> (Mac) / <kbd>Ctrl+Shift+S</kbd> (Win)
+                Full page: <kbd>Cmd+Shift+S</kbd> / <kbd>Ctrl+Shift+S</kbd><br>
+                Element: <kbd>Cmd+Shift+R</kbd> / <kbd>Ctrl+Shift+R</kbd>
             </div>
 
             <button class="toggle-config" id="toggleConfig">Options ▼</button>

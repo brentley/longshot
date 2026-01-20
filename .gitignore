@@ -1,4 +1,6 @@
 *.zip
 *.png
+*.crx
+*.pem
 !icons/*.png
 .DS_Store
