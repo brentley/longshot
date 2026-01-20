@@ -421,31 +421,21 @@ async function stitchCapturedViewports(captures, overlapHeight) {
       const image = images[i];
       const isFirstCapture = i === 0;
 
-      let sourceY = isFirstCapture ? 0 : overlapHeight + stickyHeaderHeight;
-      let drawHeight = isFirstCapture ? image.img.height : image.img.height - overlapHeight - stickyHeaderHeight;
+      // For first capture: draw full image
+      // For subsequent captures: skip overlap region AND sticky header (both are duplicates)
+      const sourceY = isFirstCapture ? 0 : overlapHeight + stickyHeaderHeight;
+      const drawHeight = isFirstCapture ? image.img.height : image.img.height - overlapHeight - stickyHeaderHeight;
 
       log(`Drawing image ${i + 1} at Y=${currentY}, source Y=${sourceY}, height=${drawHeight}, stickySkip=${isFirstCapture ? 0 : stickyHeaderHeight}px`);
 
-      // Use canvas API to composite images with overlap blending
-      if (i > 0) {
-        // For overlapping region, draw with some opacity for smooth blending
-        ctx.globalAlpha = 0.5;
-        ctx.drawImage(
-          image.img,
-          0, overlapHeight, canvasWidth, stickyHeaderHeight,
-          0, currentY, canvasWidth, stickyHeaderHeight
-        );
-        ctx.globalAlpha = 1.0;
-      }
-
-      // Draw the main part of the image
+      // Draw the image portion (skip overlap + sticky header for non-first captures)
       ctx.drawImage(
         image.img,
         0, sourceY, canvasWidth, drawHeight,
-        0, currentY + (i > 0 ? stickyHeaderHeight : 0), canvasWidth, drawHeight
+        0, currentY, canvasWidth, drawHeight
       );
 
-      currentY += drawHeight + (i > 0 ? stickyHeaderHeight : 0);
+      currentY += drawHeight;
     }
 
     log('Stitching complete, converting to PNG...');
